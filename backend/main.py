@@ -25,7 +25,8 @@ class FairnessMetricsResponse(BaseModel):
 STATE = {
     "df": None,
     "target_col": None,
-    "protected_col": None
+    "protected_col": None,
+    "model": None
 }
 
 @app.get("/")
@@ -55,6 +56,7 @@ async def upload_dataset(
         STATE["df"] = df
         STATE["target_col"] = target_column
         STATE["protected_col"] = protected_attribute
+        STATE["model"] = None
         
         group_counts = df[protected_attribute].value_counts().to_dict()
         
@@ -164,6 +166,7 @@ async def run_fairness_audit():
     
     model = RandomForestClassifier(n_estimators=20, random_state=42)
     model.fit(X, y)
+    STATE["model"] = model
     y_pred = model.predict(X)
     
     return _calculate_metrics(df_clean, target, protected, y_pred)
@@ -187,10 +190,61 @@ async def run_mitigation():
     # Fairlearn mitigation algorithm
     mitigator = ExponentiatedGradient(estimator, DemographicParity())
     mitigator.fit(X, y, sensitive_features=A)
+    STATE["model"] = mitigator
     
     y_pred_mitigated = mitigator.predict(X)
     
     return _calculate_metrics(df_clean, target, protected, y_pred_mitigated)
+
+@app.get("/api/v1/audits/counterfactual/sample")
+async def get_counterfactual_sample():
+    df = STATE.get("df")
+    target = STATE.get("target_col")
+    protected = STATE.get("protected_col")
+    model = STATE.get("model")
+    
+    if df is None or model is None:
+        raise HTTPException(status_code=400, detail="Please upload a dataset and run Fairness Metrics first.")
+        
+    df_clean = df.dropna(subset=[target, protected]).copy()
+    X = df_clean.drop(columns=[target]).select_dtypes(include=['number']).fillna(0)
+    
+    # Pick a random sample
+    sample_idx = df_clean.sample(1).index[0]
+    
+    # Get original prediction
+    features_df = pd.DataFrame([X.loc[sample_idx]])
+    prediction = int(model.predict(features_df)[0])
+    
+    # We want to return exactly the numeric features that the model uses
+    return {
+        "id": int(sample_idx),
+        "features": features_df.iloc[0].to_dict(),
+        "protected_attribute": protected,
+        "original_prediction": prediction
+    }
+
+@app.post("/api/v1/audits/counterfactual/predict")
+async def run_counterfactual_prediction(payload: dict):
+    model = STATE.get("model")
+    df = STATE.get("df")
+    target = STATE.get("target_col")
+    protected = STATE.get("protected_col")
+    
+    if model is None or df is None:
+        raise HTTPException(status_code=400, detail="Model not trained.")
+        
+    X_cols = df.dropna(subset=[target, protected]).drop(columns=[target]).select_dtypes(include=['number']).columns.tolist()
+    
+    # Build dataframe for prediction
+    row_data = {}
+    for col in X_cols:
+        row_data[col] = float(payload.get(col, 0.0))
+        
+    X_pred = pd.DataFrame([row_data])
+    prediction = int(model.predict(X_pred)[0])
+    
+    return {"prediction": prediction}
 
 from fastapi.responses import StreamingResponse
 
