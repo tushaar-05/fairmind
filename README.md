@@ -1,86 +1,127 @@
-# FairMind: How It Works
+# FairMind
 
-FairMind is a full-stack AI fairness and bias detection platform. This document explains the exact technical architecture, the flow of data, and the mathematical logic running under the hood to detect and mitigate bias in machine learning models.
+FairMind is a full-stack AI fairness audit and monitoring project.  
+It helps teams upload tabular decision data, analyze bias metrics, review compliance risk, and visualize fairness behavior in a dashboard.
 
----
+## What It Includes
 
-## 🛠️ 1. The Technology Stack
+- **Frontend:** React + Vite dashboard (`frontend/`)
+- **Backend:** FastAPI service scaffold (`backend/`)
+- **Analysis Engine:** modular fairness computation logic in `frontend/src/analysis/`
+- **Monitoring UI:** D3-powered visualizations for trends and risk monitoring
 
-FairMind uses a modern, decoupled dual-stack architecture:
+## Core Features
 
-### Frontend (User Interface)
-* **React 19 + Vite:** Blazing fast modern JavaScript framework.
-* **Tailwind CSS v4:** Utility-first CSS for the premium, responsive UI.
-* **Recharts:** Used for rendering the dynamic Bar Charts and data visualizations.
-* **Lucide React:** Iconography.
+- Dataset upload (`CSV`, `JSON`) with column role mapping
+- Fairness analysis with transparent metric formulas
+- Risk scoring and compliance mapping (EU/USA)
+- Counterfactual and intersectional bias views
+- Monitoring dashboard with dynamic alerts and D3 charts
 
-### Backend (ML Engine & API)
-* **FastAPI:** High-performance Python web framework to handle API requests.
-* **Pandas:** Used for data ingestion, CSV parsing, and metadata extraction.
-* **Scikit-Learn:** Used to train the baseline (biased) `RandomForestClassifier` on the fly.
-* **Fairlearn (Microsoft):** The core algorithmic engine used to mathematically measure bias metrics and perform model mitigation (re-weighting).
+## Fairness Math Used
 
----
+Current metrics exposed in the UI:
 
-## 🔄 2. The Application Flow
+- **Demographic Parity:** difference in approval tendency across groups
+- **Equal Opportunity (proxy mode):** subgroup positive-rate proxy comparison
+- **Disparate Impact:** ratio-based fairness check (80% rule style threshold)
+- **Calibration (prototype proxy):** score-based calibration indicator
+- **Proxy Detection:** feature risk heuristics for possible proxy variables
 
-1. **Data Ingestion (`POST /api/v1/datasets/upload`)**
-   * The user uploads a CSV file via the React UI, specifying the `Target Column` (what to predict) and the `Protected Attribute` (the sensitive demographic, like Gender or Education).
-   * FastAPI uses Pandas to parse the file in memory, count the distributions, and check for missing values.
+The frontend analysis logic lives under:
 
-2. **Baseline Model Training & Auditing (`POST /api/v1/audits/run`)**
-   * The backend cleans the data (drops NaNs, selects numeric columns) and trains a baseline `RandomForestClassifier`.
-   * It generates predictions (`y_pred`) for every row.
-   * It then mathematically compares how the model treated the different groups within the `Protected Attribute`.
+- `frontend/src/analysis/auditEngine.js`
+- `frontend/src/analysis/fairnessMetrics.js`
+- `frontend/src/analysis/riskScoring.js`
+- `frontend/src/analysis/complianceMapping.js`
+- `frontend/src/analysis/datasetProfile.js`
+- `frontend/src/analysis/ingestion.js`
 
-3. **Bias Mitigation (`POST /api/v1/audits/mitigate`)**
-   * If the model is biased, the user triggers the Mitigation Engine.
-   * The backend wraps the Random Forest model in Fairlearn's `ExponentiatedGradient` algorithm, mathematically forcing it to learn fair rules.
-   * It generates a new set of predictions and returns the cleaned metrics.
+## Project Structure
 
-4. **Data Export (`GET /api/v1/datasets/download_mitigated`)**
-   * The user downloads a pre-processed CSV where every row is assigned a mathematical `fairness_weight` so they can train fair models externally.
+```text
+fairmind/
+  frontend/                 # React + Vite app
+    src/
+      App.jsx               # Main pages (landing/upload/analysis/monitoring)
+      App.css               # Styling
+      analysis/             # Analysis modules
+  backend/                  # FastAPI backend scaffold
+    main.py                 # API app and routes
+    requirements.txt
+  docs/                     # Methodology, roadmap, data contract docs
+```
 
----
+## Run Locally
 
-## 🧮 3. The Math & Logic Explained
+### 1) Frontend
 
-### A. Proxy Detection
-* **What it does:** Finds harmless-looking variables (like Zip Code) that secretly correlate with protected attributes (like Race).
-* **The Math:** Pearson Correlation Coefficient. The backend calculates `df.corr()` for all numeric columns against the protected attribute. Anything with a correlation `> 0.15` is flagged as a potential proxy.
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-### B. Demographic Parity
-* **What it does:** Asks, *"Are both groups being approved at the exact same rate?"*
-* **The Math:** 
-  * `Rate A = P(Y_pred = 1 | Group = A)`
-  * `Rate B = P(Y_pred = 1 | Group = B)`
-  * `Metric = Rate B - Rate A`
-* **Goal:** The difference should be as close to `0.0` as possible.
+Frontend dev URL is usually `http://localhost:5173`.
 
-### C. Equal Opportunity
-* **What it does:** Asks, *"Out of the people who ACTUALLY deserved the loan (True Positives), did the model approve them equally across groups?"*
-* **The Math:** 
-  * `TPR A = P(Y_pred = 1 | Y_true = 1, Group = A)`
-  * `TPR B = P(Y_pred = 1 | Y_true = 1, Group = B)`
-  * `Metric = TPR B - TPR A`
-* **Goal:** The True Positive Rates should be identical (difference of `0.0`).
+### 2) Backend
 
-### D. Disparate Impact (The 80% Rule)
-* **What it does:** The US legal standard for discrimination (e.g., ECOA). It checks the ratio of approval rates between the minority and majority groups.
-* **The Math:** 
-  * `Metric = Rate B / Rate A`
-* **Goal:** If the ratio falls below `0.80`, it is legally considered disparate impact. The UI turns red if this threshold is failed.
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --reload
+```
 
-### E. The Mitigation Engines
+Backend URL is usually `http://localhost:8000`.
 
-FairMind uses two distinct mitigation techniques:
+### 3) Quality Checks
 
-**1. In-Processing (Fixing the Model)**
-* Used when you click the "Run Mitigation Engine" button.
-* Uses Fairlearn's `ExponentiatedGradient`. It treats fairness as a constrained optimization problem. It trains a sequence of Random Forest models, tweaking the sample weights each time to minimize the Demographic Parity difference while maximizing accuracy.
+```bash
+cd frontend
+npm run lint
+npm run test
+npm run build
+```
 
-**2. Pre-Processing (Fixing the Data)**
-* Used when you click the "Export Data" button.
-* Uses **Inverse Frequency Reweighting**. 
-* **The Math:** If a group represents only 10% of the dataset, their weight becomes `1 / 0.10 = 10`. If another group is 90%, their weight is `1 / 0.90 = 1.11`. 
-* These weights are normalized and appended to the CSV as `fairness_weight`. When a Data Scientist trains a model using these weights, the model is penalized 10x more for getting a minority prediction wrong, effectively balancing the dataset without deleting any rows.
+## API Endpoints (Current Scaffold)
+
+- `GET /health`
+- `POST /analysis/run`
+
+> Note: The frontend currently computes most analysis locally.  
+> Backend routes are scaffolded to support migration to server-side analysis.
+
+## Deployment (Vercel Recommended)
+
+Use **two Vercel projects**:
+
+1. **Frontend project**
+   - Root: `frontend`
+   - Build: `npm run build`
+   - Output: `dist`
+
+2. **Backend project**
+   - Root: `backend`
+   - Add `backend/api/index.py`:
+     ```python
+     from main import app
+     ```
+
+Then set frontend env var:
+
+- `VITE_API_BASE_URL=https://<your-backend-domain>`
+
+## Current Limitations
+
+- Monitoring data is demo/simulated (state-driven), not yet from live production streams
+- Mitigation/export buttons in UI are flow-ready but not fully wired to persistent backend jobs
+- Some compliance and calibration indicators are heuristic/prototype-level signals
+
+## Roadmap (Short)
+
+- Move analysis execution fully to backend APIs
+- Add real model training + mitigation pipeline
+- Add report export + persistence
+- Add live ingest/stream-backed monitoring
