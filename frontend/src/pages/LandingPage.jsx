@@ -37,7 +37,14 @@ const LandingPage = () => {
       <TrustSection />
       <CTASection />
       <Footer />
-      <AuthModal isOpen={isModalOpen} onClose={closeModal} />
+      <AuthModal
+        isOpen={isModalOpen}
+        onClose={closeModal}
+        onAuthSuccess={() => {
+          setIsModalOpen(false);
+          window.history.pushState({}, "", "/dashboard");
+        }}
+      />
     </div>
   );
 };

@@ -1,20 +1,44 @@
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { signupUser } from "../api/auth";
 
-const SignupForm = ({ onSwitch }) => {
+const SignupForm = ({ onSwitch, onSuccess }) => {
+  const navigate = useNavigate();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [organization, setOrganization] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    setError("");
+
     if (password !== confirmPassword) {
-      alert("Passwords do not match");
+      setError("Passwords do not match");
       return;
     }
-    console.log("Signup:", { fullName, email, password, organization });
-    // Handle signup logic here
+
+    setLoading(true);
+
+    try {
+      await signupUser({ fullName, email, password, organization });
+      onSuccess?.();
+      navigate("/overview");
+    } catch (err) {
+      console.error("Signup error:", err);
+      setError(
+        err.code === "auth/email-already-in-use"
+          ? "This email is already registered."
+          : err.code === "auth/weak-password"
+            ? "Please choose a stronger password."
+            : err.message || "Unable to create account. Please try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -78,10 +102,14 @@ const SignupForm = ({ onSwitch }) => {
       </div>
       <button
         type="submit"
-        className="w-full rounded-2xl bg-gradient-to-r from-purple-500 to-pink-500 py-3 text-sm font-semibold text-white shadow-lg shadow-pink-500/20 transition duration-200 hover:opacity-90"
+        disabled={loading}
+        className="w-full rounded-2xl bg-linear-to-r from-purple-500 to-pink-500 py-3 text-sm font-semibold text-white shadow-lg shadow-pink-500/20 transition duration-200 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        Signup
+        {loading ? "Creating account..." : "Signup"}
       </button>
+      {error && (
+        <p className="mt-4 text-center text-sm text-red-400">{error}</p>
+      )}
       <p className="text-center mt-4 text-gray-400">
         Already have an account?{" "}
         <button

@@ -13,10 +13,10 @@ const AuthModal = ({ isOpen, onClose }) => {
       onClick={onClose}
     >
       <div
-        className="relative max-w-md w-full mx-auto overflow-hidden rounded-[32px] border border-white/10 bg-gradient-to-b from-[#0b1120] to-[#020617] shadow-2xl transition-all duration-300 ease-out transform scale-100 opacity-100"
+        className="relative max-w-md w-full mx-auto overflow-hidden rounded-4xl border border-white/10 bg-linear-to-b from-[#0b1120] to-[#020617] shadow-2xl transition-all duration-300 ease-out transform scale-100 opacity-100"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="absolute inset-0 pointer-events-none bg-gradient-to-br from-purple-500/10 to-pink-500/10 blur-3xl opacity-60"></div>
+        <div className="absolute inset-0 pointer-events-none bg-linear-to-br from-purple-500/10 to-pink-500/10 blur-3xl opacity-60"></div>
         <div className="relative p-8">
           <button
             className="absolute top-5 right-5 text-gray-400 hover:text-white transition-colors text-2xl"
@@ -28,7 +28,7 @@ const AuthModal = ({ isOpen, onClose }) => {
             <button
               className={`rounded-2xl py-3 font-semibold transition-all duration-200 ${
                 activeTab === "login"
-                  ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg shadow-purple-500/20"
+                  ? "bg-linear-to-r from-purple-500 to-pink-500 text-white shadow-lg shadow-purple-500/20"
                   : "text-gray-400 hover:text-white"
               }`}
               onClick={() => setActiveTab("login")}
@@ -38,7 +38,7 @@ const AuthModal = ({ isOpen, onClose }) => {
             <button
               className={`rounded-2xl py-3 font-semibold transition-all duration-200 ${
                 activeTab === "signup"
-                  ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg shadow-pink-500/20"
+                  ? "bg-linear-to-r from-purple-500 to-pink-500 text-white shadow-lg shadow-pink-500/20"
                   : "text-gray-400 hover:text-white"
               }`}
               onClick={() => setActiveTab("signup")}
@@ -47,9 +47,15 @@ const AuthModal = ({ isOpen, onClose }) => {
             </button>
           </div>
           {activeTab === "login" ? (
-            <LoginForm onSwitch={() => setActiveTab("signup")} />
+            <LoginForm
+              onSwitch={() => setActiveTab("signup")}
+              onSuccess={onClose}
+            />
           ) : (
-            <SignupForm onSwitch={() => setActiveTab("login")} />
+            <SignupForm
+              onSwitch={() => setActiveTab("login")}
+              onSuccess={onClose}
+            />
           )}
         </div>
       </div>

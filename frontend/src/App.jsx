@@ -30,20 +30,20 @@
 //           <span className="text-xl font-bold tracking-tight text-white">Fair<span className="text-primary-500">Mind</span></span>
 //         </div>
 //       </div>
-      
+
 //       <div className="flex-1 py-6 px-4 space-y-2 overflow-y-auto">
 //         <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4 px-4">Analytics</div>
 //         {navItems.map((item) => (
-//           <SidebarItem 
-//             key={item.path} 
-//             icon={item.icon} 
-//             label={item.label} 
-//             path={item.path} 
-//             isActive={location.pathname === item.path} 
+//           <SidebarItem
+//             key={item.path}
+//             icon={item.icon}
+//             label={item.label}
+//             path={item.path}
+//             isActive={location.pathname === item.path}
 //           />
 //         ))}
 //       </div>
-      
+
 //       <div className="p-4 border-t border-slate-800">
 //         <Link to="/settings" className="flex items-center gap-3 px-4 py-3 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-all">
 //           <Settings size={20} />
@@ -62,9 +62,9 @@
 //       </button>
 //       <div className="relative hidden md:block">
 //         <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-//         <input 
-//           type="text" 
-//           placeholder="Search audits..." 
+//         <input
+//           type="text"
+//           placeholder="Search audits..."
 //           className="pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:bg-white w-64 transition-all"
 //         />
 //       </div>
@@ -103,15 +103,20 @@
 // }
 
 // export default App;
-import React from 'react'
+import React from "react";
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import LandingPage from "./pages/LandingPage";
+import Overview from "./pages/Overview";
 
 const App = () => {
   return (
-    <>
-    <LandingPage/>
-    </>
-  )
-}
+    <Router>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/overview" element={<Overview />} />
+      </Routes>
+    </Router>
+  );
+};
 
-export default App
+export default App;
