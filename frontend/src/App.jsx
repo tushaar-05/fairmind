@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import * as d3 from 'd3'
 import './App.css'
+import { buildAuditResult } from './analysis/auditEngine'
+import { COLUMN_TYPE_OPTIONS } from './analysis/constants'
+import { parseDatasetFile, validateAuditInputs } from './analysis/ingestion'
 
 const routes = {
   home: '/',
@@ -15,13 +19,6 @@ const sampleRows = [
   ['1044', '29', '5', '$58,900', '30318', '1', '1.2', 'Graduate', '$0', 'Denied'],
   ['1045', '37', '10', '$71,300', '60616', '4', '3.1', 'Advanced', '$180K', 'Review'],
   ['1046', '52', '25', '$91,800', '75201', '2', '2.7', 'College', '$315K', 'Approved'],
-]
-
-const columnTypeOptions = [
-  'Sensitive Attribute (e.g. race, gender)',
-  'Target Variable (outcome)',
-  'Feature',
-  'ID Column (exclude)',
 ]
 
 const analysisChecks = [
@@ -79,19 +76,6 @@ const approvalData = [
   { day: '26', a: 78, b: 61 },
   { day: '27', a: 80, b: 59 },
   { day: '28', a: 77, b: 59 },
-]
-
-const alerts = [
-  {
-    severity: 'critical',
-    title: 'Approval gap exceeded threshold for ZIP + age segment',
-    time: '2 min ago',
-  },
-  {
-    severity: 'warning',
-    title: 'Proxy risk rising for geographic features',
-    time: '14 min ago',
-  },
 ]
 
 const feedRows = [
@@ -184,16 +168,6 @@ function RoutedLink({ to, navigate, children, className = '' }) {
   )
 }
 
-function pointPath(data, key, max = 200, width = 560, height = 210) {
-  return data
-    .map((item, index) => {
-      const x = 34 + (index * (width - 68)) / (data.length - 1)
-      const y = height - 30 - (item[key] / max) * (height - 58)
-      return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
-    })
-    .join(' ')
-}
-
 function ChartCard({ title, children, className = '' }) {
   return (
     <section className={`widget ${className}`}>
@@ -205,110 +179,207 @@ function ChartCard({ title, children, className = '' }) {
   )
 }
 
-function DecisionVolumeChart() {
-  const [hovered, setHovered] = useState(null)
-  const hoveredData = hovered !== null ? volumeData[hovered] : null
-  const aPath = pointPath(volumeData, 'a')
-  const bPath = pointPath(volumeData, 'b')
+function D3LineComparisonChart({ data }) {
+  const ref = useRef(null)
 
+  useEffect(() => {
+    if (!ref.current || !Array.isArray(data) || !data.length) return
+
+    const width = 560
+    const height = 230
+    const margin = { top: 16, right: 20, bottom: 34, left: 36 }
+    const innerWidth = width - margin.left - margin.right
+    const innerHeight = height - margin.top - margin.bottom
+
+    const svg = d3.select(ref.current)
+    svg.selectAll('*').remove()
+    svg.attr('viewBox', `0 0 ${width} ${height}`).attr('width', width).attr('height', height)
+
+    const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
+
+    const x = d3.scalePoint().domain(data.map((d) => d.day)).range([0, innerWidth])
+    const y = d3.scaleLinear().domain([0, d3.max(data, (d) => Math.max(d.a, d.b)) || 200]).nice().range([innerHeight, 0])
+
+    g.append('g').call(d3.axisLeft(y).ticks(4)).attr('color', '#94a3b8')
+    g.append('g').attr('transform', `translate(0,${innerHeight})`).call(d3.axisBottom(x)).attr('color', '#94a3b8')
+
+    const lineA = d3.line().x((d) => x(d.day) ?? 0).y((d) => y(d.a))
+    const lineB = d3.line().x((d) => x(d.day) ?? 0).y((d) => y(d.b))
+
+    g.append('path').datum(data).attr('fill', 'none').attr('stroke', '#0d9488').attr('stroke-width', 3).attr('d', lineA)
+    g.append('path').datum(data).attr('fill', 'none').attr('stroke', '#6366f1').attr('stroke-width', 3).attr('d', lineB)
+  }, [data])
+
+  return <svg ref={ref} className="line-chart d3-chart" role="img" aria-label="Decision volume by group over time" />
+}
+
+function D3ThresholdLineChart({ data, threshold = 70 }) {
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!ref.current || !Array.isArray(data) || !data.length) return
+    const width = 560
+    const height = 230
+    const margin = { top: 16, right: 20, bottom: 34, left: 36 }
+    const innerWidth = width - margin.left - margin.right
+    const innerHeight = height - margin.top - margin.bottom
+
+    const svg = d3.select(ref.current)
+    svg.selectAll('*').remove()
+    svg.attr('viewBox', `0 0 ${width} ${height}`).attr('width', width).attr('height', height)
+    const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
+
+    const x = d3.scalePoint().domain(data.map((d) => d.day)).range([0, innerWidth])
+    const y = d3.scaleLinear().domain([0, 100]).range([innerHeight, 0])
+
+    g.append('g').call(d3.axisLeft(y).ticks(5)).attr('color', '#94a3b8')
+    g.append('g').attr('transform', `translate(0,${innerHeight})`).call(d3.axisBottom(x)).attr('color', '#94a3b8')
+
+    g.append('line')
+      .attr('x1', 0)
+      .attr('x2', innerWidth)
+      .attr('y1', y(threshold))
+      .attr('y2', y(threshold))
+      .attr('stroke', '#dc2626')
+      .attr('stroke-dasharray', '6 6')
+
+    const line = d3.line().x((d) => x(d.day) ?? 0).y((d) => y(d.score))
+    g.append('path').datum(data).attr('fill', 'none').attr('stroke', '#0d9488').attr('stroke-width', 3).attr('d', line)
+
+    g.selectAll('circle')
+      .data(data)
+      .join('circle')
+      .attr('cx', (d) => x(d.day) ?? 0)
+      .attr('cy', (d) => y(d.score))
+      .attr('r', 3.5)
+      .attr('fill', (d) => (d.score < threshold ? '#dc2626' : '#0d9488'))
+  }, [data, threshold])
+
+  return <svg ref={ref} className="line-chart d3-chart" role="img" aria-label="Rolling fairness score over time" />
+}
+
+function D3GroupedBarChart({ data }) {
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!ref.current || !Array.isArray(data) || !data.length) return
+    const width = 560
+    const height = 240
+    const margin = { top: 16, right: 20, bottom: 34, left: 36 }
+    const innerWidth = width - margin.left - margin.right
+    const innerHeight = height - margin.top - margin.bottom
+
+    const svg = d3.select(ref.current)
+    svg.selectAll('*').remove()
+    svg.attr('viewBox', `0 0 ${width} ${height}`).attr('width', width).attr('height', height)
+    const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
+
+    const groups = data.map((d) => d.day)
+    const x0 = d3.scaleBand().domain(groups).range([0, innerWidth]).padding(0.2)
+    const x1 = d3.scaleBand().domain(['a', 'b']).range([0, x0.bandwidth()]).padding(0.15)
+    const y = d3.scaleLinear().domain([0, d3.max(data, (d) => Math.max(d.a, d.b)) || 100]).nice().range([innerHeight, 0])
+
+    g.append('g').call(d3.axisLeft(y).ticks(4)).attr('color', '#94a3b8')
+    g.append('g').attr('transform', `translate(0,${innerHeight})`).call(d3.axisBottom(x0)).attr('color', '#94a3b8')
+
+    const group = g.selectAll('.bar-group').data(data).join('g').attr('transform', (d) => `translate(${x0(d.day)},0)`)
+    group.append('rect').attr('x', x1('a')).attr('y', (d) => y(d.a)).attr('width', x1.bandwidth()).attr('height', (d) => innerHeight - y(d.a)).attr('fill', '#0d9488')
+    group.append('rect').attr('x', x1('b')).attr('y', (d) => y(d.b)).attr('width', x1.bandwidth()).attr('height', (d) => innerHeight - y(d.b)).attr('fill', '#6366f1')
+  }, [data])
+
+  return <svg ref={ref} className="bar-chart d3-chart" role="img" aria-label="Approval rates for Group A and Group B" />
+}
+
+function D3HeatmapChart({ rows, cols, values }) {
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!ref.current || !Array.isArray(rows) || !Array.isArray(cols) || !rows.length || !cols.length) return
+    const width = 560
+    const height = 240
+    const margin = { top: 30, right: 10, bottom: 10, left: 90 }
+    const innerWidth = width - margin.left - margin.right
+    const innerHeight = height - margin.top - margin.bottom
+
+    const svg = d3.select(ref.current)
+    svg.selectAll('*').remove()
+    svg.attr('viewBox', `0 0 ${width} ${height}`).attr('width', width).attr('height', height)
+    const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
+
+    const x = d3.scaleBand().domain(cols).range([0, innerWidth]).padding(0.08)
+    const y = d3.scaleBand().domain(rows).range([0, innerHeight]).padding(0.08)
+    const color = d3.scaleLinear().domain([0, 80]).range(['#ecfeff', '#dc2626'])
+
+    const flattened = rows.flatMap((r, ri) => cols.map((c, ci) => ({ r, c, v: values?.[ri]?.[ci] ?? 0 })))
+    g.selectAll('rect')
+      .data(flattened)
+      .join('rect')
+      .attr('x', (d) => x(d.c) ?? 0)
+      .attr('y', (d) => y(d.r) ?? 0)
+      .attr('width', x.bandwidth())
+      .attr('height', y.bandwidth())
+      .attr('rx', 6)
+      .attr('fill', (d) => color(d.v))
+
+    g.selectAll('.label')
+      .data(flattened)
+      .join('text')
+      .attr('x', (d) => (x(d.c) ?? 0) + x.bandwidth() / 2)
+      .attr('y', (d) => (y(d.r) ?? 0) + y.bandwidth() / 2 + 4)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', 10)
+      .attr('fill', '#0f172a')
+      .text((d) => d.v)
+
+    g.append('g').call(d3.axisLeft(y).tickSize(0)).attr('color', '#64748b').select('.domain').remove()
+    g.append('g').call(d3.axisTop(x).tickSize(0)).attr('color', '#64748b').select('.domain').remove()
+  }, [rows, cols, values])
+
+  return <svg ref={ref} className="line-chart d3-chart" role="img" aria-label="Live intersectional risk heatmap" />
+}
+
+function DecisionVolumeChart({ data }) {
   return (
     <ChartCard title="Decision Volume" className="wide-widget">
       <div className="legend-row">
         <span><i className="teal" /> Group A</span>
         <span><i className="indigo" /> Group B</span>
       </div>
-      <div className="chart-wrap">
-        <svg className="line-chart" viewBox="0 0 560 230" role="img" aria-label="Decision volume by group over time">
-          <path className="grid-line" d="M34 46 H526 M34 102 H526 M34 158 H526" />
-          <path className="area-fill teal-fill" d={`${aPath} L526 200 L34 200 Z`} />
-          <path className="series teal-stroke" d={aPath} />
-          <path className="series indigo-stroke" d={bPath} />
-          {volumeData.map((item, index) => {
-            const x = 34 + (index * 492) / (volumeData.length - 1)
-            const y = 200 - (item.a / 200) * 172
-            return (
-              <g key={item.day}>
-                <circle
-                  className="hover-target"
-                  cx={x}
-                  cy={y}
-                  r="15"
-                  onMouseEnter={() => setHovered(index)}
-                  onMouseLeave={() => setHovered(null)}
-                />
-                {item.anomaly && <rect className="anomaly" x={x - 5} y={y - 27} width="10" height="10" transform={`rotate(45 ${x} ${y - 22})`} />}
-                <text x={x} y="222">{item.day}</text>
-              </g>
-            )
-          })}
-        </svg>
-        {hoveredData && (
-          <div className="chart-tooltip">
-            <strong>{hoveredData.day}</strong>
-            <span>Group A: {hoveredData.a}</span>
-            <span>Group B: {hoveredData.b}</span>
-          </div>
-        )}
-      </div>
+      {data.length ? <D3LineComparisonChart data={data} /> : <p className="analysis-note">No volume data for selected range.</p>}
     </ChartCard>
   )
 }
 
-function FairnessScoreChart() {
-  const highPath = pointPath(fairnessData.filter((item) => item.score >= 70), 'score', 100)
-  const lowPath = pointPath(fairnessData.filter((item) => item.score < 70), 'score', 100)
-
+function FairnessScoreChart({ data }) {
   return (
     <ChartCard title="Fairness Score Over Time">
-      <svg className="line-chart" viewBox="0 0 560 230" role="img" aria-label="Rolling fairness score over time">
-        <path className="grid-line" d="M34 56 H526 M34 112 H526 M34 168 H526" />
-        <path className="threshold" d="M34 80 H526" />
-        <text className="threshold-label" x="356" y="74">Regulatory Threshold</text>
-        <path className="series teal-stroke" d={highPath} />
-        <path className="series red-stroke" d={lowPath} />
-        {fairnessData.map((item, index) => {
-          const x = 34 + (index * 492) / (fairnessData.length - 1)
-          return <text key={item.day} x={x} y="222">Apr {item.day}</text>
-        })}
-      </svg>
+      {data.length ? <D3ThresholdLineChart data={data} threshold={70} /> : <p className="analysis-note">No fairness data for selected range.</p>}
     </ChartCard>
   )
 }
 
-function ApprovalBarChart() {
+function ApprovalBarChart({ data }) {
+  const latest = data[data.length - 1]
+  const gap = latest ? Math.max(0, latest.a - latest.b) : 0
   return (
     <ChartCard title="Approval Rate by Group">
-      <svg className="bar-chart" viewBox="0 0 560 240" role="img" aria-label="Approval rates for Group A and Group B">
-        <path className="grid-line" d="M34 50 H526 M34 104 H526 M34 158 H526" />
-        {approvalData.map((item, index) => {
-          const x = 42 + index * 70
-          const aHeight = item.a * 1.55
-          const bHeight = item.b * 1.55
-          return (
-            <g key={item.day}>
-              <rect className="bar teal-bar" x={x} y={190 - aHeight} width="18" height={aHeight} />
-              <rect className="bar indigo-bar" x={x + 22} y={190 - bHeight} width="18" height={bHeight} />
-              <text x={x + 20} y="222">Apr {item.day}</text>
-            </g>
-          )
-        })}
-      </svg>
-      <div className="delta-line">Gap Today: <strong>18 percentage points</strong> <span>↑ from yesterday</span></div>
+      {data.length ? <D3GroupedBarChart data={data} /> : <p className="analysis-note">No approval data for selected range.</p>}
+      <div className="delta-line">Gap Today: <strong>{gap} percentage points</strong> <span>{gap >= 15 ? '↑ above threshold' : 'within threshold'}</span></div>
     </ChartCard>
   )
 }
 
-function AlertsPanel() {
+function AlertsPanel({ items }) {
   return (
     <ChartCard title="Active Alerts">
-      {alerts.length === 0 ? (
+      {items.length === 0 ? (
         <div className="empty-alerts">
           <span>✓</span>
           <strong>No anomalies detected in the last 24 hours.</strong>
         </div>
       ) : (
         <div className="alert-list">
-          {alerts.map((alert) => (
+          {items.map((alert) => (
             <article className="alert-item" key={alert.title}>
               <span className={`severity ${alert.severity}`} />
               <div>
@@ -324,7 +395,7 @@ function AlertsPanel() {
   )
 }
 
-function DecisionFeed() {
+function DecisionFeed({ rows }) {
   return (
     <ChartCard title="Decision Feed" className="tall-widget">
       <div className="feed-table-wrap">
@@ -338,7 +409,7 @@ function DecisionFeed() {
             </tr>
           </thead>
           <tbody>
-            {feedRows.map((row) => (
+            {rows.map((row) => (
               <tr key={`${row[0]}-${row[1]}`}>
                 <td>{row[0]}</td>
                 <td>{row[1]}</td>
@@ -359,28 +430,11 @@ function DecisionFeed() {
   )
 }
 
-function RiskHeatmap() {
+function RiskHeatmap({ rows, cols, values }) {
   return (
     <ChartCard title="Live Intersectional Risk Map">
       <p className="updated-label">Last Updated: 3 min ago</p>
-      <div className="heatmap">
-        <span />
-        {heatmapCols.map((col) => <strong key={col}>{col}</strong>)}
-        {heatmapRows.map((row, rowIndex) => (
-          <div className="heatmap-row" key={row}>
-            <strong>{row}</strong>
-            {heatmapValues[rowIndex].map((value, colIndex) => (
-              <span
-                className="bubble"
-                style={{ '--risk-size': `${22 + value / 2}px`, '--risk-alpha': 0.12 + value / 100 }}
-                key={`${row}-${heatmapCols[colIndex]}`}
-              >
-                {value}
-              </span>
-            ))}
-          </div>
-        ))}
-      </div>
+      <D3HeatmapChart rows={rows} cols={cols} values={values} />
     </ChartCard>
   )
 }
@@ -512,142 +566,11 @@ function UploadStepper({ currentStep }) {
   )
 }
 
-function parseCsv(text) {
-  return text
-    .trim()
-    .split(/\r?\n/)
-    .map((line) => line.split(',').map((cell) => cell.trim().replace(/^"|"$/g, '')))
-}
-
 function formatFileSize(bytes) {
   if (!bytes) return '0 KB'
   const units = ['B', 'KB', 'MB', 'GB']
   const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   return `${(bytes / 1024 ** power).toFixed(power === 0 ? 0 : 1)} ${units[power]}`
-}
-
-function isPositiveOutcome(value) {
-  return /^(1|true|yes|y|approved|approve|accepted|pass|positive|granted)$/i.test(String(value).trim())
-}
-
-function inferColumnType(column) {
-  const normalized = column.toLowerCase()
-  if (normalized === 'id' || normalized.endsWith('_id') || normalized.includes('applicant id')) return 'ID Column (exclude)'
-  if (['decision', 'outcome', 'target', 'approved', 'approval', 'loan_status', 'personal loan'].some((key) => normalized.includes(key))) return 'Target Variable (outcome)'
-  if (['gender', 'race', 'ethnicity', 'age', 'zip', 'postcode', 'location', 'education'].some((key) => normalized.includes(key))) return 'Sensitive Attribute (e.g. race, gender)'
-  return 'Feature'
-}
-
-function riskFromGap(gap) {
-  if (gap >= 25) return 'High'
-  if (gap >= 12) return 'Medium'
-  return 'Low'
-}
-
-function statusFromGap(gap) {
-  if (gap >= 20) return 'Fail'
-  if (gap >= 10) return 'Borderline'
-  return 'Pass'
-}
-
-function buildAuditResult({ file, columns, rows, columnTypes, selectedRegion }) {
-  const targetColumn = columns.find((column) => columnTypes[column] === 'Target Variable (outcome)') || columns[columns.length - 1]
-  const targetIndex = columns.indexOf(targetColumn)
-  const sensitiveColumns = columns.filter((column) => columnTypes[column]?.startsWith('Sensitive'))
-  const featureColumns = columns.filter((column) => columnTypes[column] === 'Feature')
-  const totalRows = rows.length
-  const positiveRows = rows.filter((row) => isPositiveOutcome(row[targetIndex]))
-  const positiveRate = totalRows ? positiveRows.length / totalRows : 0
-
-  const groupStats = sensitiveColumns.flatMap((column) => {
-    const index = columns.indexOf(column)
-    const groups = new Map()
-    rows.forEach((row) => {
-      const group = String(row[index] || 'Unknown')
-      const current = groups.get(group) || { column, group, count: 0, positives: 0 }
-      current.count += 1
-      if (isPositiveOutcome(row[targetIndex])) current.positives += 1
-      groups.set(group, current)
-    })
-    return [...groups.values()].map((item) => ({
-      ...item,
-      share: totalRows ? item.count / totalRows : 0,
-      approvalRate: item.count ? item.positives / item.count : 0,
-    }))
-  })
-
-  const approvalRates = groupStats.map((item) => item.approvalRate)
-  const maxGap = approvalRates.length > 1 ? Math.max(...approvalRates) - Math.min(...approvalRates) : 0
-  const score = Math.max(0, Math.round(100 - maxGap * 100 * 1.25 - Math.max(0, 0.8 - positiveRate) * 8))
-  const biasFlags = groupStats.filter((item) => Math.abs(item.approvalRate - positiveRate) >= 0.15).length
-  const complianceRisk = score < 60 || biasFlags >= 5 ? 'High' : score < 78 || biasFlags >= 2 ? 'Moderate' : 'Low'
-
-  const representation = groupStats
-    .sort((a, b) => a.share - b.share)
-    .slice(0, 6)
-    .map((item) => [
-      `${item.column}: ${item.group}`,
-      Math.round(item.share * 100),
-      item.share < 0.08 ? 'critical' : item.share < 0.16 ? 'medium' : 'low',
-    ])
-
-  const proxy = columns
-    .filter((column) => columnTypes[column] !== 'Target Variable (outcome)' && columnTypes[column] !== 'ID Column (exclude)')
-    .map((column) => {
-      const normalized = column.toLowerCase()
-      const risk = ['zip', 'postal', 'postcode', 'address', 'last name', 'surname'].some((key) => normalized.includes(key))
-        ? 'High'
-        : ['job', 'title', 'education', 'school', 'income', 'location'].some((key) => normalized.includes(key))
-          ? 'Medium'
-          : 'Low'
-      return [column, risk]
-    })
-    .sort((a, b) => ['High', 'Medium', 'Low'].indexOf(a[1]) - ['High', 'Medium', 'Low'].indexOf(b[1]))
-    .slice(0, 6)
-
-  const groupA = groupStats[0]
-  const groupB = groupStats.find((item) => item.column === groupA?.column && item.group !== groupA.group) || groupStats[1] || groupA
-  const groupAGap = groupA ? Math.abs(groupA.approvalRate - positiveRate) : 0
-  const groupBGap = groupB ? Math.abs(groupB.approvalRate - positiveRate) : 0
-  const disparateImpact = groupA && groupB ? Math.min(groupA.approvalRate, groupB.approvalRate) / Math.max(groupA.approvalRate || 0.01, groupB.approvalRate || 0.01) : 1
-
-  const metrics = [
-    ['Demographic Parity', (1 - groupAGap).toFixed(2), (1 - groupBGap).toFixed(2), statusFromGap(maxGap * 100), 'Checks whether positive outcomes are distributed similarly across groups.'],
-    ['Equal Opportunity', (groupA?.approvalRate || positiveRate).toFixed(2), (groupB?.approvalRate || positiveRate).toFixed(2), statusFromGap(maxGap * 80), 'Compares true positive rates for qualified applicants across groups.'],
-    ['Disparate Impact', disparateImpact.toFixed(2), '1.00', disparateImpact < 0.8 ? 'Fail' : disparateImpact < 0.9 ? 'Borderline' : 'Pass', 'Flags outcome ratios below common four-fifths guidance.'],
-    ['Calibration', (0.86 + Math.min(score, 90) / 1000).toFixed(2), (0.82 + Math.min(score, 90) / 1000).toFixed(2), score < 65 ? 'Borderline' : 'Pass', 'Checks whether predicted risk means the same thing across groups.'],
-  ]
-
-  const counterfactualDiffs = Math.min(100, Math.round(maxGap * 100 + proxy.filter(([, risk]) => risk === 'High').length * 9))
-  const lawRows = [
-    ['EU AI Act', 'EU', complianceRisk === 'High' ? 'High' : 'Medium', 'Fairness Metrics, Report', `Fairness score is ${score}/100 with ${biasFlags} flagged subgroup gaps. Add mitigation notes and post-deployment monitoring evidence.`],
-    ['GDPR Art. 22', 'EU', score < 65 ? 'Medium' : 'Low', 'Model Behavior', 'Automated decision explanations should identify the top drivers and provide an appeal path for affected users.'],
-    ['ECOA', 'USA', proxy.some(([, risk]) => risk === 'High') ? 'High' : riskFromGap(maxGap * 100), 'Dataset Forensics, Counterfactual Sim', 'Potential credit-decision proxy behavior found. Consider removing granular geographic or identity-adjacent fields.'],
-    ['Title VII', 'USA', sensitiveColumns.length ? riskFromGap(maxGap * 80) : 'Low', 'Fairness Metrics', 'If this system is used for employment, review subgroup outcome gaps and document threshold choices.'],
-  ].filter(([, region]) => selectedRegion === 'Both' || region === selectedRegion)
-
-  return {
-    datasetName: file?.name || 'Uploaded Dataset',
-    timestamp: new Date().toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
-    score,
-    biasFlags,
-    sensitiveColumns,
-    complianceRisk,
-    targetColumn,
-    totalRows,
-    positiveRate,
-    representation: representation.length ? representation : [['No sensitive columns tagged', 100, 'low']],
-    proxy,
-    metrics,
-    complianceRows: lawRows,
-    counterfactualDiffs,
-    counterfactual: {
-      original: `${sensitiveColumns[0] || 'Sensitive attribute'} = ${groupA?.group || 'Group A'}`,
-      changed: `${sensitiveColumns[0] || 'Sensitive attribute'} = ${groupB?.group || 'Group B'}`,
-      rejected: groupA && groupB ? groupA.approvalRate < groupB.approvalRate : true,
-    },
-    matrixLabels: sensitiveColumns.length ? sensitiveColumns.slice(0, 5) : featureColumns.slice(0, 5),
-  }
 }
 
 function UploadPage({ navigate, onAuditComplete }) {
@@ -662,51 +585,32 @@ function UploadPage({ navigate, onAuditComplete }) {
   const [selectedPreset, setSelectedPreset] = useState('Banking')
   const [selectedRegion, setSelectedRegion] = useState('Both')
   const [selectedChecks, setSelectedChecks] = useState(() => new Set(analysisChecks))
+  const [setupErrors, setSetupErrors] = useState([])
 
   const laws = complianceByRegion[selectedRegion]
   const hasSensitiveColumn = useMemo(() => Object.values(columnTypes).some((type) => type.startsWith('Sensitive')), [columnTypes])
 
-  function loadPreview(nextFile) {
+  async function loadPreview(nextFile) {
     setFile(nextFile)
     setCurrentStep(1)
-    if (nextFile.name.toLowerCase().endsWith('.csv')) {
-      const reader = new FileReader()
-      reader.onload = () => {
-        const parsed = parseCsv(String(reader.result || ''))
-        if (parsed.length > 1) {
-          setColumns(parsed[0])
-          setRows(parsed.slice(1))
-          setColumnTypes(Object.fromEntries(parsed[0].map((column) => [column, inferColumnType(column)])))
-        }
-      }
-      reader.readAsText(nextFile)
-      return
-    }
-
-    if (nextFile.name.toLowerCase().endsWith('.json')) {
-      const reader = new FileReader()
-      reader.onload = () => {
-        try {
-          const parsed = JSON.parse(String(reader.result || '[]'))
-          const records = Array.isArray(parsed) ? parsed : [parsed]
-          const parsedColumns = Object.keys(records[0] || {})
-          if (parsedColumns.length) {
-            setColumns(parsedColumns)
-            setRows(records.map((record) => parsedColumns.map((column) => String(record[column] ?? ''))))
-            setColumnTypes(Object.fromEntries(parsedColumns.map((column) => [column, inferColumnType(column)])))
-          }
-        } catch {
-          setColumns([])
-          setRows([])
-        }
-      }
-      reader.readAsText(nextFile)
+    setSetupErrors([])
+    try {
+      const parsed = await parseDatasetFile(nextFile)
+      setColumns(parsed.columns)
+      setRows(parsed.rows)
+      setColumnTypes(parsed.columnTypes)
+    } catch (error) {
+      setColumns([])
+      setRows([])
+      setColumnTypes({})
+      setSetupErrors([error instanceof Error ? error.message : 'Could not parse file.'])
     }
   }
 
   function removeFile() {
     setFile(null)
     setCurrentStep(1)
+    setSetupErrors([])
     if (inputRef.current) inputRef.current.value = ''
   }
 
@@ -716,6 +620,12 @@ function UploadPage({ navigate, onAuditComplete }) {
   }
 
   function runAnalysis() {
+    const validation = validateAuditInputs({ columns, rows, columnTypes })
+    if (!validation.valid) {
+      setSetupErrors(validation.errors)
+      return
+    }
+    setSetupErrors([])
     onAuditComplete(buildAuditResult({ file, columns, rows, columnTypes, selectedRegion }))
     navigate(routes.analysis)
   }
@@ -729,13 +639,13 @@ function UploadPage({ navigate, onAuditComplete }) {
           <>
             <div className="upload-heading">
               <h1>Upload Your Dataset.</h1>
-              <p>We accept CSV, Excel, or JSON. Your data never leaves your environment.</p>
+              <p>We accept CSV or JSON. Your data never leaves your environment.</p>
             </div>
             <input
               ref={inputRef}
               className="hidden-file-input"
               type="file"
-              accept=".csv,.xlsx,.xls,.json"
+              accept=".csv,.json"
               onChange={(event) => event.target.files?.[0] && loadPreview(event.target.files[0])}
             />
             {!file ? (
@@ -763,7 +673,12 @@ function UploadPage({ navigate, onAuditComplete }) {
                 <button type="button" onClick={removeFile}>Remove</button>
               </div>
             )}
-            <div className="format-pills"><span>CSV</span><span>XLSX</span><span>JSON</span></div>
+            <div className="format-pills"><span>CSV</span><span>JSON</span></div>
+            {setupErrors.length > 0 && (
+              <div className="validation-list" role="alert">
+                {setupErrors.map((error) => <p key={error}>{error}</p>)}
+              </div>
+            )}
 
             {file && (
               <>
@@ -796,7 +711,7 @@ function UploadPage({ navigate, onAuditComplete }) {
                     <label className={`column-map-row ${columnTypes[column]?.startsWith('Sensitive') ? 'sensitive' : ''}`} key={column}>
                       <span>{column}</span>
                       <select value={columnTypes[column] || 'Feature'} onChange={(event) => setColumnTypes((current) => ({ ...current, [column]: event.target.value }))}>
-                        {columnTypeOptions.map((option) => <option key={option}>{option}</option>)}
+                        {COLUMN_TYPE_OPTIONS.map((option) => <option key={option}>{option}</option>)}
                       </select>
                     </label>
                   ))}
@@ -865,9 +780,30 @@ function StatusCell({ status }) {
   return <span className={`metric-status ${status.toLowerCase()}`}><b>{symbol}</b>{status}</span>
 }
 
+function FlowStep({ title, endpoint, detail }) {
+  return (
+    <article className="flow-step">
+      <h3>{title}</h3>
+      <code>{endpoint}</code>
+      <p>{detail}</p>
+    </article>
+  )
+}
+
+function FormulaCard({ title, formula, note }) {
+  return (
+    <article className="formula-card">
+      <h3>{title}</h3>
+      <code>{formula}</code>
+      <p>{note}</p>
+    </article>
+  )
+}
+
 function AnalysisPage({ audit, navigate }) {
   const [openLaw, setOpenLaw] = useState('ECOA')
   const [bubbleTip, setBubbleTip] = useState(null)
+  const [actionNote, setActionNote] = useState('')
 
   if (!audit) {
     return (
@@ -917,6 +853,32 @@ function AnalysisPage({ audit, navigate }) {
           <article className="kpi-card"><strong className="amber-text">{audit.complianceRisk}</strong><h2>Compliance Risk</h2><p>{audit.complianceRows.filter((row) => row[2] !== 'Low').length} laws require review</p></article>
         </section>
 
+        <section className="analysis-card" id="report">
+          <h2>Platform Flow</h2>
+          <div className="flow-grid">
+            <FlowStep title="Data Ingestion" endpoint="POST /api/v1/datasets/upload" detail="Upload CSV, choose target + protected attribute, validate missing values and distributions." />
+            <FlowStep title="Baseline Audit" endpoint="POST /api/v1/audits/run" detail="Train baseline model, generate predictions, and compute fairness metrics across groups." />
+            <FlowStep title="Bias Mitigation" endpoint="POST /api/v1/audits/mitigate" detail="Apply in-processing mitigation constraints to improve fairness while preserving utility." />
+            <FlowStep title="Data Export" endpoint="GET /api/v1/datasets/download_mitigated" detail="Export weighted dataset with fairness_weight for external model training pipelines." />
+          </div>
+          <div className="action-row">
+            <button
+              type="button"
+              onClick={() => setActionNote('Mitigation request queued. In production this calls POST /api/v1/audits/mitigate.')}
+            >
+              Run Mitigation Engine
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setActionNote('Export prepared. In production this calls GET /api/v1/datasets/download_mitigated.')}
+            >
+              Export Data
+            </button>
+          </div>
+          {actionNote && <p className="analysis-note">{actionNote}</p>}
+        </section>
+
         <section className="analysis-card" id="dataset-forensics">
           <h2>Dataset Forensics</h2>
           <div className="forensics-grid">
@@ -953,16 +915,45 @@ function AnalysisPage({ audit, navigate }) {
             <table className="metrics-table">
               <thead><tr><th>Metric Name</th><th>Group A Score</th><th>Group B Score</th><th>Status</th></tr></thead>
               <tbody>
-                {audit.metrics.map(([metric, a, b, status, tip]) => (
-                  <tr key={metric}>
-                    <td><span className="metric-tooltip" data-tip={tip}>{metric}</span></td>
-                    <td>{a}</td>
-                    <td>{b}</td>
-                    <td><StatusCell status={status} /></td>
+                {audit.metrics.map((metric) => (
+                  <tr key={metric.id}>
+                    <td><span className="metric-tooltip" data-tip={metric.tip}>{metric.name}</span></td>
+                    <td>{metric.groupAScore}</td>
+                    <td>{metric.groupBScore}</td>
+                    <td><StatusCell status={metric.status} /></td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="analysis-callout-grid">
+            <article className="analysis-callout">
+              <h3>How metrics are computed</h3>
+              {audit.metricDetails.map((detail) => (
+                <div className="metric-explain" key={detail.metric}>
+                  <strong>{detail.metric}</strong>
+                  <p>{detail.formula}</p>
+                  <p>{detail.threshold}</p>
+                  <p>{detail.reason}</p>
+                </div>
+              ))}
+            </article>
+            <article className="analysis-callout">
+              <h3>Confidence guardrails</h3>
+              {audit.subgroupWarnings.length ? (
+                <ul className="warning-list">
+                  {audit.subgroupWarnings.map((warning) => <li key={warning}>{warning}</li>)}
+                </ul>
+              ) : (
+                <p>All subgroup sample sizes meet the minimum threshold for stable trend checks.</p>
+              )}
+            </article>
+          </div>
+          <div className="formula-grid">
+            <FormulaCard title="Demographic Parity" formula="Rate_B - Rate_A" note="Goal: value close to 0.0 indicates balanced approval outcomes." />
+            <FormulaCard title="Equal Opportunity" formula="TPR_B - TPR_A" note="Compares true positive rates among actually qualified applicants." />
+            <FormulaCard title="Disparate Impact" formula="Rate_B / Rate_A" note="80% rule: ratios below 0.80 indicate potential legal risk." />
+            <FormulaCard title="Proxy Detection" formula="corr(feature, protected_attr) > 0.15" note="Flags non-sensitive features that may encode protected traits." />
           </div>
           <div className="severity-heatmap">
             {['Parity', 'Opportunity', 'Impact', 'Calibration'].map((metric) => (
@@ -982,7 +973,7 @@ function AnalysisPage({ audit, navigate }) {
               <p>{audit.counterfactual.original}</p>
               <strong>{audit.counterfactual.rejected ? 'REJECTED' : 'APPROVED'}</strong>
             </div>
-            <div className="bias-label">Bias Detected: Gender Changed the Outcome</div>
+            <div className="bias-label">Bias Detected: {audit.counterfactualAttribute} changed the outcome</div>
             <div className="profile-card approved">
               <h3>Counterfactual Profile</h3>
               <p>{audit.counterfactual.changed}</p>
@@ -1039,6 +1030,25 @@ function AnalysisPage({ audit, navigate }) {
 function MonitoringPage() {
   const [range, setRange] = useState('Today')
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const windowSize = range === 'Today' ? 1 : range === 'Last 7 Days' ? 7 : range === 'Last 30 Days' ? 30 : 3
+
+  const filteredVolumeData = volumeData.slice(-Math.min(windowSize, volumeData.length))
+  const filteredFairnessData = fairnessData.slice(-Math.min(windowSize, fairnessData.length))
+  const filteredApprovalData = approvalData.slice(-Math.min(windowSize, approvalData.length))
+  const liveDecisions = filteredVolumeData.reduce((total, item) => total + item.a + item.b, 0)
+
+  const latestFairness = filteredFairnessData[filteredFairnessData.length - 1]?.score ?? 100
+  const latestApproval = filteredApprovalData[filteredApprovalData.length - 1]
+  const latestGap = latestApproval ? Math.max(0, latestApproval.a - latestApproval.b) : 0
+  const computedAlerts = [
+    ...(latestGap >= 15 ? [{ severity: 'critical', title: `Approval gap is ${latestGap} points in selected range`, time: 'just now' }] : []),
+    ...(latestFairness < 70 ? [{ severity: 'warning', title: `Fairness score dropped to ${latestFairness}`, time: 'just now' }] : []),
+    ...filteredVolumeData.some((entry) => entry.anomaly) ? [{ severity: 'warning', title: 'Decision volume anomaly detected', time: '5 min ago' }] : [],
+  ]
+
+  const feedRowsForRange = feedRows.slice(0, Math.max(3, Math.min(feedRows.length, windowSize + 1)))
+  const heatmapRangeScale = range === 'Today' ? 1 : range === 'Last 7 Days' ? 0.95 : range === 'Last 30 Days' ? 0.9 : 1.05
+  const scopedHeatmapValues = heatmapValues.map((row) => row.map((value) => Math.round(Math.max(8, Math.min(95, value * heatmapRangeScale)))))
 
   return (
     <main className="monitoring-shell">
@@ -1067,7 +1077,7 @@ function MonitoringPage() {
 
         <div className="live-status">
           <span className="pulse-dot" />
-          Live — 1,204 decisions monitored today.
+          Live — {liveDecisions.toLocaleString()} decisions monitored in selected range.
         </div>
 
         <button className="settings-button" type="button" aria-label="Open monitoring settings" onClick={() => setDrawerOpen(true)}>
@@ -1075,20 +1085,20 @@ function MonitoringPage() {
         </button>
       </header>
 
-      {alerts.length > 0 && (
+      {computedAlerts.length > 0 && (
         <div className="alert-banner">
-          <span>2 Active Alerts Require Attention.</span>
+          <span>{computedAlerts.length} active alerts require attention.</span>
           <a href="#alerts">View Alerts →</a>
         </div>
       )}
 
       <section className="dashboard-grid" aria-label="Real-time monitoring widgets">
-        <DecisionVolumeChart />
-        <FairnessScoreChart />
-        <ApprovalBarChart />
-        <AlertsPanel />
-        <DecisionFeed />
-        <RiskHeatmap />
+        <DecisionVolumeChart data={filteredVolumeData} />
+        <FairnessScoreChart data={filteredFairnessData} />
+        <ApprovalBarChart data={filteredApprovalData} />
+        <AlertsPanel items={computedAlerts} />
+        <DecisionFeed rows={feedRowsForRange} />
+        <RiskHeatmap rows={heatmapRows} cols={heatmapCols} values={scopedHeatmapValues} />
       </section>
 
       <SettingsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
